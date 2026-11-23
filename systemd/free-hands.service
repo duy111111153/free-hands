@@ -1,0 +1,13 @@
+[Unit]
+Description=FREE-HANDS DOOM voice bridge
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/Work/free-hands/free-hands serve
+Restart=on-failure
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "free-hands"
+version = "0.1.0"
+description = "FREE-HANDS: a private, hands-free DOOM voice bridge for Handy and Codex"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = [
+    "websocket-client>=1.8,<2",
+]
+
+[project.scripts]
+free-hands = "free_hands.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+free_hands = ["data/*.md"]

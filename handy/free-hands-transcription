@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+import json
+import os
+import socket
+import sys
+from pathlib import Path
+
+SOCKET = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "free-hands/control.sock"
+text = sys.stdin.read().rstrip("\n")
+if not text:
+    raise SystemExit(0)
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(500)
+    sock.connect(str(SOCKET))
+    sock.sendall(json.dumps({"command": "ingest", "text": text}).encode())
+    while sock.recv(65536):
+        pass

@@ -1,0 +1,16 @@
+name: Bug report
+description: Report a reproducible FREE-HANDS problem
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction and doctor output
+      description: Remove transcripts, screenshots, tokens, and personal paths.
+    validations:
+      required: true
