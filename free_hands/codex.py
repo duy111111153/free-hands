@@ -249,11 +249,12 @@ class CodexClient:
     def _fallback(self, text: str, cwd: str | None = None,
                   *, images: tuple[Path, ...] = (), effort: str | None = None) -> tuple[str, str]:
         """Use the authenticated non-interactive client if App Server is disabled."""
+        reasoning_effort = effort or ("low" if images else self.effort)
         command = [
             *self._cli_command(), "exec", "--json", "--skip-git-repo-check",
             "--sandbox", self.sandbox_mode, "--ask-for-approval", APPROVAL_POLICY,
             "--model", self.model or "gpt-5.6-luna",
-            "-c", f"model_reasoning_effort={json.dumps(effort or ("low" if images else self.effort))}",
+            "-c", f"model_reasoning_effort={json.dumps(reasoning_effort)}",
         ]
         for image in images:
             command.extend(["--image", str(image)])

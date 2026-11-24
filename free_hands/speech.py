@@ -101,7 +101,8 @@ def spoken_metrics(text: str) -> str:
             return raw
         if "." in raw or "," in raw:
             whole, decimal = re.split(r"[.,]", raw, maxsplit=1)
-            return f"{_number_words(re.match(r'-?\d+', whole))} punto {_spanish_integer(int(decimal))}"
+            integer_words = _number_words(re.match(r"-?\d+", whole))
+            return f"{integer_words} punto {_spanish_integer(int(decimal))}"
         return _number_words(match)
 
     return re.sub(r"-?\d{1,9}(?:[.,]\d{1,3})?", number_replace, text)
