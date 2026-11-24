@@ -11,19 +11,20 @@ cd ~/Work/voz-codex
 chmod +x voz-codex handy/transcription
 ./voz-codex doctor
 mkdir -p ~/.local/share/com.pais.handy/hooks ~/.config/systemd/user
-install -m 700 handy/transcription ~/.local/share/com.pais.handy/hooks/transcription
-install -m 644 systemd/voz-codex.service ~/.config/systemd/user/voz-codex.service
+./install.sh
 systemctl --user daemon-reload
-systemctl --user enable --now voz-codex.service
-mkdir -p ~/.config/omarchy/plugins/local.voz-tracker
-install -m 644 omarchy/local.voz-tracker/* ~/.config/omarchy/plugins/local.voz-tracker/
-omarchy plugin enable local.voz-tracker --section right
+systemctl --user enable --now free-hands.service
+omarchy plugin enable local.free-hands --section right
 omarchy-shell shell rescanPlugins
 ```
 
-Configura Handy con Paste Method `None` o `External Script` según la versión. Alt+Z conserva el control de grabación de Handy. El binding de Hyprland se cambia después de validar el servicio, usando la ruta absoluta a `.venv/bin/voz-codex toggle`.
+Configura Handy para usar el hook instalado `free-hands-transcription`. Asigna
+Alt+Z en Hyprland a la ruta absoluta de `free-hands toggle` y usa un atajo
+diferente en Handy para evitar dos activaciones.
 
-Comprueba la instalación con `voz-codex doctor`, pulsa Alt+Z en Handy y revisa que aparezca DOOM en la barra. La tarjeta admite doble clic para abrir el hilo actual, una X para ocultarla y Alt+X para cancelar una tarea activa.
+Comprueba la instalación con `free-hands doctor`. La tarjeta admite doble clic
+para abrir el hilo, doble clic sobre una gráfica para ampliarla, una X para
+ocultarla, Alt+X para cancelar y **Silenciar voz** en la tarjeta normal.
 
 ## Voz neuronal local
 

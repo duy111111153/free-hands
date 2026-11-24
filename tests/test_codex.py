@@ -1,12 +1,21 @@
 import json
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from voz_codex.codex import CodexClient
 
 
 class CodexTests(unittest.TestCase):
+    def test_full_access_requires_explicit_opt_in(self):
+        with patch.dict("os.environ", {}, clear=True):
+            client = CodexClient("codex app-server")
+            self.assertEqual(client.sandbox_mode, "read-only")
+            self.assertEqual(client.sandbox_policy, {"type": "readOnly"})
+        with patch.dict("os.environ", {"FREE_HANDS_FULL_ACCESS": "1"}):
+            client = CodexClient("codex app-server")
+            self.assertEqual(client.sandbox_policy, {"type": "dangerFullAccess"})
+
     def test_answer_keeps_all_parts_and_ignores_commentary(self):
         client = CodexClient("codex app-server", effort="medium")
         client.thread_id = "chat"

@@ -6,12 +6,9 @@ import re
 import select
 import shutil
 import subprocess
-import threading
-from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from time import monotonic
+from time import monotonic, sleep
 from unicodedata import normalize
 
 
@@ -50,7 +47,7 @@ _SHOWING = re.compile(
 )
 _QUESTION = re.compile(r"\b(?:que|cual(?:es)?|donde|cuantos?)\b")
 _VISIBLE = re.compile(
-    r"\b(?:ves|miras|observas|distingues|detectas|identificas|reconoces|notas|"
+    r"\b(?:ves?|miras?|observas?|distingues?|detectas?|identificas?|reconoces?|notas?|"
     r"alcanzas a (?:ver|distinguir|leer|identificar)|"
     r"estas\s+(?:viendo|mirando|observando|distinguiendo|leyendo)|"
     r"se\s+(?:ve|muestra|lee|alcanza a ver)|me veo|hay|aparece|sale|dice|figura|"
@@ -70,6 +67,26 @@ _IMPLICIT_LOOK = re.compile(
     r"\b(?:mira|observa|fijate|chequea|revisa|analiza)\s+(?:esto|aqui|ahi)\b"
 )
 _CAPTURE_NOUN = re.compile(r"\b(?:haz|toma|saca|captura|manda|dame)\b.{0,30}\b(?:pantallazo|screenshot)\b")
+_PERSONAL_VIEW = re.compile(r"\b(?:en|por|desde|frente a)\s+mi\s+$")
+_DICTATION_QUERY = re.compile(r"^\s*(?:(?:oye|doom|oye doom)\s+)?(?:que|cual|como)\b")
+_DEVICE_DISCUSSION = re.compile(
+    r"\b(?:no|nunca|sin|si|cuando|falla|fallo|error|permiso[s]?|problema[s]?|mal|"
+    r"funcion\w*|configur\w*|instal\w*|repar\w*|compr\w*|conect\w*|desconect\w*|"
+    r"activ\w*|desactiv\w*|driver[s]?|modelo[s]?|resolucion|ajust\w*|graba\w*|"
+    r"guard\w*|descarg\w*|app|chrome|navegador|significa|opciones)\b"
+)
+
+
+def _dictated_view(clause: str, prefix: str, suffix: str) -> bool:
+    """Recover a short visual question whose verb was lost in transcription."""
+    return (
+        len(clause.split()) <= 16
+        and bool(_DICTATION_QUERY.match(clause))
+        and bool(_PERSONAL_VIEW.search(prefix))
+        and not suffix.strip()
+        and not _DEVICE_DISCUSSION.search(clause)
+        and not _OTHER_MEDIA.search(clause)
+    )
 
 
 def vision_intent(text: str, *, implied: tuple[bool, bool] = (True, False)) -> tuple[bool, bool]:
@@ -111,6 +128,7 @@ def vision_intent(text: str, *, implied: tuple[bool, bool] = (True, False)) -> t
                     and bool(re.search(r"\b(?:es|tengo|sostengo|parece|identificas|dirias|crees|reconoces)\b", prefix)))
                 or (previous_requested and bool(_COORDINATED.fullmatch(immediate)))
                 or (match.lastgroup == "screen" and bool(_CAPTURE_NOUN.search(clause)))
+                or (previous is None and _dictated_view(clause, prefix, clause[match.end():]))
             )
             if affirmative:
                 requested.add(match.lastgroup)
@@ -133,7 +151,7 @@ def wants_both(text: str) -> bool:
 
 
 SHOT_INTERVAL = 0.75
-SHOT_COUNT = 3
+SHOT_COUNT = 4
 MAX_JPEG = 1_000_000
 
 
@@ -230,7 +248,7 @@ def capture_camera(folder: Path, on_frame, check_cancel):
         except OSError:
             continue
         try:
-            for frame in _jpeg_frames(camera.stdout, monotonic() + 5, check_cancel):
+            for frame in _jpeg_frames(camera.stdout, monotonic() + 7, check_cancel):
                 check_cancel()
                 now = monotonic()
                 if next_shot is None:
@@ -259,52 +277,40 @@ def capture_camera(folder: Path, on_frame, check_cancel):
             camera.stdout.close()
         if sequence:
             break
-    raise ScreenCaptureError("No pude obtener las tres tomas. Revisa el permiso de la webcam y si otra aplicación la está usando.")
+    raise ScreenCaptureError("No pude obtener las cuatro tomas. Revisa el permiso de la webcam y si otra aplicación la está usando.")
 
 
 class ScreenCaptureError(RuntimeError):
     pass
 
 
-@contextmanager
-def screen_image():
-    with TemporaryDirectory(prefix="voz-pantalla-") as folder:
-        path = Path(folder) / "pantalla.jpg"
-        try:
-            info = subprocess.check_output(
-                ["hyprctl", "-j", "monitors"], timeout=2, stderr=subprocess.DEVNULL,
-            )
-            monitor = next(item for item in json.loads(info) if item.get("focused"))
-            logical_long_edge = max(monitor["width"], monitor["height"]) / monitor["scale"]
-            scale = min(monitor["scale"], 1280 / logical_long_edge)
-            def capture(target, quality=82):
-                subprocess.run(["grim", "-o", monitor["name"], "-s", f"{scale:.4f}", "-t", "jpeg",
-                                "-q", str(quality), str(target)], check=True, timeout=3,
-                               stderr=subprocess.DEVNULL)
-            capture(path)
-            if not path.stat().st_size:
-                raise ValueError("Captura vacía")
-        except (OSError, subprocess.SubprocessError, ValueError, KeyError, StopIteration,
-                ZeroDivisionError) as error:
-            raise ScreenCaptureError("No pude capturar el monitor activo de Hyprland.") from error
-        preview = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "free-hands" / "screen-preview.jpg"
-        stop = threading.Event()
-        preview.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        def publish_screen():
-            temporary = preview.with_suffix(".tmp.jpg")
-            while not stop.wait(1.0):
-                try:
-                    capture(temporary, 65)
-                    temporary.replace(preview)
-                except (OSError, subprocess.SubprocessError):
-                    break
-        worker = threading.Thread(target=publish_screen, daemon=True)
-        worker.start()
-        try:
-            yield path
-        finally:
-            stop.set()
-            try:
-                preview.unlink()
-            except FileNotFoundError:
-                pass
+def capture_screen(folder: Path, on_frame, check_cancel):
+    """Sample the focused monitor four times, publishing each JPEG as it arrives."""
+    shots = []
+    try:
+        check_cancel()
+        info = subprocess.check_output(
+            ["hyprctl", "-j", "monitors"], timeout=2, stderr=subprocess.DEVNULL,
+        )
+        monitor = next(item for item in json.loads(info) if item.get("focused"))
+        logical_long_edge = max(monitor["width"], monitor["height"]) / monitor["scale"]
+        scale = min(monitor["scale"], 1280 / logical_long_edge)
+        command = ["grim", "-o", monitor["name"], "-s", f"{scale:.4f}", "-t", "jpeg", "-q", "75", "-"]
+        next_shot = monotonic()
+        for number in range(1, SHOT_COUNT + 1):
+            while (remaining := next_shot - monotonic()) > 0:
+                check_cancel()
+                sleep(min(remaining, 0.05))
+            check_cancel()
+            frame = subprocess.check_output(command, timeout=3, stderr=subprocess.DEVNULL)
+            if not frame.startswith(b"\xff\xd8") or len(frame) > MAX_JPEG:
+                raise ValueError("Invalid screen JPEG")
+            path = folder / f"shot-{number}.jpg"
+            _write_private(path, frame)
+            shots.append(path)
+            on_frame(number, number)
+            next_shot += SHOT_INTERVAL
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, StopIteration,
+            ZeroDivisionError) as error:
+        raise ScreenCaptureError("No pude capturar el monitor activo de Hyprland.") from error
+    return tuple(shots)

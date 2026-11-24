@@ -16,3 +16,8 @@ project = "default"
 Runtime data and the private socket live below `$XDG_DATA_HOME/free-hands` and
 `$XDG_RUNTIME_DIR/free-hands`. Directories are mode `0700`; the control socket
 is mode `0600`. Do not put tokens or passwords in this file.
+
+Codex turns use its read-only sandbox by default. On a trusted, single-user
+machine, set `Environment=FREE_HANDS_FULL_ACCESS=1` under `[Service]` in a local
+`systemctl --user edit free-hands.service` override and restart the unit to
+explicitly allow unsandboxed Codex commands and writes.

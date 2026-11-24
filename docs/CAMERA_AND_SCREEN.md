@@ -2,11 +2,18 @@
 
 Capture is opt-in. DOOM opens the webcam or focused screen only when the
 request contains an affirmative visual intent; negated requests and technical
-questions about cameras do not activate it. Webcam requests collect three
-separate JPEG shots. Files are stored in a mode-`0700` runtime directory,
-attached only to the requested Codex turn, and removed when the turn ends or
-is cancelled. Failed attempts are discarded and child FFmpeg processes are
-closed.
+questions about cameras do not activate it. Say “¿Qué diría que ve en mi webcam?”
+or “Revisa mi pantalla” to select a source. Capture runs on Linux through
+FFmpeg/V4L2 or Hyprland/grim, independently of Chrome.
 
-Never use visual capture for passwords, tokens, or other secrets. Check the
-preview before sending a visual request.
+Each source takes four JPEGs approximately 750 ms apart. Its task card shows
+the preview, a brief flash per shot, four thumbnails as they arrive, and the
+response text below. Webcam preview updates up to six times per second. The
+screen preview updates at each shot. For a combined request the captures run
+in parallel, and Codex receives screen shots first, then webcam shots.
+
+The webcam closes before analysis. Private JPEGs are available to the widget
+during analysis and for up to 23 seconds afterward. Cancellation and capture
+errors discard temporary files. Codex receives the selected JPEGs as turn
+attachments. Move passwords or other sensitive material out of view before
+requesting capture.

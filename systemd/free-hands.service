@@ -4,7 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/Work/free-hands/free-hands serve
+ExecStart=%h/.local/bin/free-hands serve
 Restart=on-failure
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1

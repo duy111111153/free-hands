@@ -18,18 +18,22 @@ chmod +x free-hands handy/free-hands-transcription
 ## Service and widget
 
 ```bash
-mkdir -p ~/.config/systemd/user
-install -m 0644 systemd/free-hands.service ~/.config/systemd/user/
+./install.sh
 systemctl --user daemon-reload
 systemctl --user enable --now free-hands.service
-
-mkdir -p ~/.config/omarchy/plugins/local.free-hands
-install -m 0644 omarchy/local.free-hands/* ~/.config/omarchy/plugins/local.free-hands/
 omarchy plugin enable local.free-hands --section right
 ```
 
 Configure Handy's paste method as `None` or `External Script` and point it to
-`handy/free-hands-transcription`. Alt+Z remains Handy's recording control.
+`~/.local/share/com.pais.handy/hooks/free-hands-transcription`. In Omarchy,
+bind Alt+Z in Hyprland to the absolute path of
+`~/.local/bin/free-hands` with the `toggle` argument. Use a different binding inside
+Handy so that only one handler owns Alt+Z. Enable `local.free-hands` in
+Omarchy to display visual previews, metric charts, and the voice mute button.
+
+Keep the checkout at its installed location. The launcher in
+`~/.local/bin/free-hands` links to the checkout. Start Handy from the desktop
+or configure the bundled optional `handy.service` for your graphical session.
 
 ## Migration
 
@@ -53,6 +57,7 @@ and [Camera and screen](CAMERA_AND_SCREEN.md).
 ```bash
 systemctl --user disable --now free-hands.service
 rm -f ~/.config/systemd/user/free-hands.service
+test ! -L ~/.local/bin/free-hands || unlink ~/.local/bin/free-hands
 omarchy plugin disable local.free-hands 2>/dev/null || true
 rm -rf ~/.config/omarchy/plugins/local.free-hands
 ```

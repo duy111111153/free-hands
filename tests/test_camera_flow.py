@@ -1,8 +1,9 @@
 import unittest
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
+from xml.etree import ElementTree
 
 from voz_codex import config
 from voz_codex.service import Service
@@ -35,7 +36,7 @@ class CameraFlowTests(unittest.TestCase):
     @staticmethod
     def fake_capture(folder, on_frame, check_cancel):
         check_cancel()
-        paths = tuple(folder / f"shot-{i}.jpg" for i in range(1, 4))
+        paths = tuple(folder / f"shot-{i}.jpg" for i in range(1, 5))
         for i, path in enumerate(paths, 1):
             path.write_bytes(b"fixture")
             on_frame(i, i)
@@ -60,12 +61,12 @@ class CameraFlowTests(unittest.TestCase):
 
     def test_fresh_images_detail_and_refresh_after_restart(self):
         app = self.start()
-        result = app.handle({"command": "ingest", "text": ORIGINAL})
+        result = app.handle({"command": "ingest", "text": "que anda y me quedé en mi webcam"})
         self.assertEqual(result["state"], "done")
         first = app.codex.ask.call_args
-        self.assertEqual(len(first.kwargs["images"]), 3)
+        self.assertEqual(len(first.kwargs["images"]), 4)
         self.assertIn("una sola frase corta", first.args[0])
-        self.assertFalse(any(image.exists() for image in first.kwargs["images"]))
+        self.assertTrue(all(image.exists() for image in first.kwargs["images"]))
 
         app = self.start()
         self.assertEqual(app.history.get_state("last_camera_thread"), "camera-chat")
@@ -77,7 +78,7 @@ class CameraFlowTests(unittest.TestCase):
         self.assertEqual(self.capture.call_count, 1)
 
         app.handle({"command": "ingest", "text": "¿Qué ves ahora?"})
-        self.assertEqual(len(app.codex.ask.call_args.kwargs["images"]), 3)
+        self.assertEqual(len(app.codex.ask.call_args.kwargs["images"]), 4)
         self.assertEqual(self.capture.call_count, 2)
 
     def test_incomplete_capture_is_reported_locally(self):
@@ -86,9 +87,29 @@ class CameraFlowTests(unittest.TestCase):
         self.capture.return_value = ()
         result = app.handle({"command": "ingest", "text": ORIGINAL})
         self.assertEqual(result["state"], "screen_unavailable")
-        self.assertIn("tres tomas", app.task["detail"])
+        self.assertIn("cuatro tomas", app.task["detail"])
         self.assertEqual(self.capture.call_count, 2)
         app.codex.ask.assert_not_called()
+
+    def test_chart_is_private_and_only_announced_after_rendering(self):
+        app = self.start()
+        app.codex.ask.side_effect = None
+        app.codex.ask.return_value = (
+            "turn-1", "B supera a A.\n```doom-chart\n"
+            '{"title":"A < B","points":[["<script>",-3],["B",5]]}\n```',
+        )
+        result = app.handle({"command": "ingest", "text": "Haz una gráfica comparando A y B"})
+        self.assertTrue(app.task["chart"])
+        chart = config.RUNTIME_HOME / "chart.svg"
+        self.assertEqual(chart.stat().st_mode & 0o777, 0o600)
+        self.assertIsNone(ElementTree.parse(chart).find(".//{*}script"))
+        self.assertEqual(result["answer"], "Puedes ver la comparación en esta gráfica. B supera a A.")
+        app.speech.speak.assert_called_once_with(result["answer"])
+
+        app.codex.ask.return_value = ("turn-2", "Faltan datos.\n```doom-chart\n{}\n```")
+        result = app.handle({"command": "ingest", "text": "Haz otra gráfica comparando A y B"})
+        self.assertFalse(app.task.get("chart"))
+        self.assertEqual(result["answer"], "Faltan datos.")
 
     def test_showing_an_object_uses_fresh_photos_and_retries_partial_capture(self):
         app = self.start()
@@ -103,30 +124,24 @@ class CameraFlowTests(unittest.TestCase):
         self.assertEqual(app.handle({"command": "ingest", "text": SHOWING})["state"], "done")
         self.assertEqual(len(attempts), 2)
         self.assertNotEqual(*attempts)
-        self.assertFalse(any(folder.exists() for folder in attempts))
-        self.assertEqual(len(app.codex.ask.call_args.kwargs["images"]), 3)
+        self.assertFalse(attempts[0].exists())
+        self.assertTrue(attempts[1].exists())
+        self.assertEqual(len(app.codex.ask.call_args.kwargs["images"]), 4)
         app.codex.ask.assert_called_once()
 
     def test_missing_attachment_reply_becomes_an_actionable_error(self):
         app = self.start()
         app.codex.ask.side_effect = None
-        app.codex.ask.return_value = ("turn-1", "No estoy recibiendo una imagen actual de tu webcam, ñaño.")
+        app.codex.ask.return_value = ("turn-1", "No puedo ver tu webcam porque no hay una sesión de Chrome disponible, ñaño.")
         result = app.handle({"command": "ingest", "text": LIVE_LOOK})
-        self.assertEqual(len(app.codex.ask.call_args.kwargs["images"]), 3)
+        self.assertEqual(len(app.codex.ask.call_args.kwargs["images"]), 4)
         self.assertEqual(result["state"], "screen_unavailable")
         self.assertEqual(app.task["state"], "error")
         self.assertIn("abre mi webcam otra vez", app.task["detail"])
         app.speech.speak.assert_called_once_with(result["error"])
 
     def test_screen_context_survives_restart_and_both_sources_stay_ordered(self):
-        @contextmanager
-        def fake_screen():
-            with TemporaryDirectory() as folder:
-                path = Path(folder) / "pantalla.jpg"
-                path.write_bytes(b"fixture")
-                yield path
-
-        with patch("voz_codex.service.screen_image", side_effect=fake_screen) as screen:
+        with patch("voz_codex.service.capture_screen", side_effect=self.fake_capture) as screen:
             app = self.start()
             app.handle({"command": "ingest", "text": "Léeme lo que dice en mi pantalla"})
             self.capture.assert_not_called()
@@ -137,6 +152,18 @@ class CameraFlowTests(unittest.TestCase):
 
             app.handle({"command": "ingest", "text": "Revisa mi webcam junto con la pantalla"})
             self.assertEqual(
-                [path.name for path in app.codex.ask.call_args.kwargs["images"]],
-                ["pantalla.jpg", "shot-1.jpg", "shot-2.jpg", "shot-3.jpg"],
+                [path.parent.name.split("-")[0] for path in app.codex.ask.call_args.kwargs["images"]],
+                ["screen"] * 4 + ["camera"] * 4,
             )
+
+    def test_mute_applies_only_to_the_selected_turn(self):
+        app = self.start()
+        app.handle({"command": "ingest", "text": "Hola"})
+        task_id = app.task["id"]
+        self.assertEqual(app.handle({"command": "mute", "task_id": task_id})["state"], "muted")
+        self.assertTrue(app.task["muted"])
+        self.assertEqual(app.task["state"], "done")
+        app.handle({"command": "ingest", "text": "Hola de nuevo"})
+        self.assertFalse(app.task.get("muted"))
+        app.speech.set_muted.assert_called_with(False)
+        self.assertEqual(app.handle({"command": "mute", "task_id": task_id})["state"], "stale")

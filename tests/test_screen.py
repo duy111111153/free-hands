@@ -20,6 +20,8 @@ class ScreenIntentTests(unittest.TestCase):
                 "Revisa la webcam que está encima del monitor.",
                 "Solo la webcam, no abras mi pantalla. Mira por la cámara.",
                 "No mires el monitor y observa mi camara",
+                "que anda y me quedé en mi webcam",
+                "Qué lo que ve en mi webcam.",
             ),
             (False, True): (
                 "Échale un vistazo al monitor",
@@ -53,6 +55,11 @@ class ScreenIntentTests(unittest.TestCase):
                 "Dame más detalles",
                 "No quiero que leas mi pantalla",
                 "No abras la webcam para ver mi escritorio",
+                "No quiero que ande en mi webcam",
+                "¿Qué anda mal en mi webcam?",
+                "¿Qué permisos necesito en mi webcam?",
+                "¿Qué graba Chrome en mi webcam?",
+                "Kevin webcam.",
             ),
         }
         for expected, phrases in cases.items():
@@ -69,6 +76,7 @@ class ScreenIntentTests(unittest.TestCase):
         self.assertTrue(wants_camera("¿Qué iPhone dirías que es este que te estoy mostrando en la webcam?"))
         self.assertTrue(wants_camera("¿Qué es esto que te estoy enseñando?"))
         self.assertTrue(wants_camera("¿Qué estás viendo en mi webcam ahora mismo?"))
+        self.assertTrue(wants_camera("¿Qué diría que ve en mi webcam?"))
         self.assertTrue(wants_camera("¿Qué objeto estás viendo ahorita en mi cámara?"))
         self.assertTrue(wants_camera("Dime qué estás viendo en mi cámara."))
         self.assertTrue(wants_camera("Mira esto"))
@@ -93,7 +101,7 @@ class ScreenIntentTests(unittest.TestCase):
             self.assertEqual(_mjpeg_size("/dev/video0", (1, 2, 4)), "848x480")
         self.assertEqual(probe.call_count, 2)
 
-    def test_camera_publishes_three_private_shots_and_releases_process(self):
+    def test_camera_publishes_four_private_shots_and_releases_process(self):
         frame = b"\xff\xd8test\xff\xd9"
         process = Mock()
         with (
@@ -101,14 +109,14 @@ class ScreenIntentTests(unittest.TestCase):
             patch("voz_codex.screen.shutil.which", return_value="ffmpeg"),
             patch("voz_codex.screen._camera_commands", return_value=[["ffmpeg"]]),
             patch("voz_codex.screen.subprocess.Popen", return_value=process),
-            patch("voz_codex.screen._jpeg_frames", return_value=iter([frame] * 5)),
-            patch("voz_codex.screen.monotonic", side_effect=[0, 0, 0.5, 0.75, 1.5, 2.25]),
+            patch("voz_codex.screen._jpeg_frames", return_value=iter([frame] * 6)),
+            patch("voz_codex.screen.monotonic", side_effect=[0, 0, 0.5, 0.75, 1.5, 2.25, 3.0]),
         ):
             notify = Mock()
             paths = capture_camera(Path(folder), notify, lambda: None)
-            self.assertEqual([path.name for path in paths], ["shot-1.jpg", "shot-2.jpg", "shot-3.jpg"])
+            self.assertEqual([path.name for path in paths], [f"shot-{i}.jpg" for i in range(1, 5)])
             self.assertTrue(all(path.read_bytes() == frame and path.stat().st_mode & 0o777 == 0o600 for path in paths))
-            self.assertEqual([call.args[1] for call in notify.call_args_list], [0, 0, 1, 2, 3])
+            self.assertEqual([call.args[1] for call in notify.call_args_list], [0, 0, 1, 2, 3, 4])
         process.terminate.assert_called_once()
         process.stdout.close.assert_called_once()
 

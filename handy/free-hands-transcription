@@ -10,8 +10,14 @@ text = sys.stdin.read().rstrip("\n")
 if not text:
     raise SystemExit(0)
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-    sock.settimeout(500)
-    sock.connect(str(SOCKET))
+    # Codex may take longer than a short network-style timeout while it
+    # prepares audio or a vision response. Keep the hook bounded, but allow
+    # normal long requests to complete without Handy falling back to paste.
+    sock.settimeout(180)
+    try:
+        sock.connect(str(SOCKET))
+    except (FileNotFoundError, ConnectionRefusedError) as exc:
+        raise SystemExit(f"FREE-HANDS no está activo ({SOCKET})") from exc
     sock.sendall(json.dumps({"command": "ingest", "text": text}).encode())
     while sock.recv(65536):
         pass

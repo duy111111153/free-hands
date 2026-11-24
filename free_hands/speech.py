@@ -13,7 +13,7 @@ from itertools import cycle
 from pathlib import Path
 from time import monotonic
 
-from .config import DATA_HOME, clamp_speech_gain
+from .config import DATA_HOME, LEGACY_APP_DIR, clamp_speech_gain
 
 KOKORO_VOICES = {"alex": "em_alex", "dora": "ef_dora", "kokoro": "ef_dora"}
 
@@ -159,7 +159,8 @@ class Speech:
     def __init__(self, configured: str = "", voice: str = "claude", gain: float = 2.0):
         self.configured = configured
         self.process: subprocess.Popen | None = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self.muted = False
         self.cues = cycle(("break", "chance", "deuna"))
         self.voice = voice
         self.gain = clamp_speech_gain(gain)
@@ -168,9 +169,16 @@ class Speech:
         self.kokoro_started = 0.0
         self.first_audio_ms: int | None = None
 
+    @property
+    def assets(self) -> Path:
+        legacy = DATA_HOME.with_name(LEGACY_APP_DIR)
+        if not (DATA_HOME / "voices").is_dir() and (legacy / "voices").is_dir():
+            return legacy
+        return DATA_HOME
+
     def _kokoro_command(self, voice: str) -> list[str] | None:
-        python = DATA_HOME / "piper-venv/bin/python"
-        models = DATA_HOME / "voices/kokoro"
+        python = self.assets / "piper-venv/bin/python"
+        models = self.assets / "voices/kokoro"
         if not (python.is_file() and shutil.which("pw-play") and all(
             (models / asset).is_file()
             for asset in ("kokoro-v1.0.int8.onnx", "voices-v1.0.bin")
@@ -228,7 +236,7 @@ class Speech:
         elif self.voice in {"claude"}:
             voices = ("es_MX-claude-high", "es_MX-ald-medium", "es_AR-daniela-high")
         for name in voices:
-            model = DATA_HOME / "voices" / f"{name}.onnx"
+            model = self.assets / "voices" / f"{name}.onnx"
             if model.is_file() and model.with_suffix(".onnx.json").is_file():
                 return model
         return None
@@ -257,13 +265,13 @@ class Speech:
         def play():
             nonlocal cue
             with guard, self.lock:
-                if ended or self.kokoro_busy or (self.process and self.process.poll() is None):
+                if ended or self.muted or self.kokoro_busy or (self.process and self.process.poll() is None):
                     return
                 nonlocal cue_index
                 name = cue_names[min(cue_index, len(cue_names) - 1)]
                 if reason != "repeated" and cue_index == 0:
                     name = next(self.cues)
-                clip = DATA_HOME / "voices/cues" / f"{name}.wav"
+                clip = self.assets / "voices/cues" / f"{name}.wav"
                 cue_index += 1
                 if self.voice in KOKORO_VOICES and not self.configured:
                     clip = clip.parent / KOKORO_VOICES[self.voice] / clip.name
@@ -271,7 +279,7 @@ class Speech:
                 if model and (clip.parent / model.stem / clip.name).is_file():
                     clip = clip.parent / model.stem / clip.name
                 if not clip.is_file():
-                    fallback = DATA_HOME / "voices/cues/momento.wav"
+                    fallback = self.assets / "voices/cues/momento.wav"
                     if self.voice in KOKORO_VOICES and not self.configured:
                         fallback = fallback.parent / KOKORO_VOICES[self.voice] / fallback.name
                     elif model and (fallback.parent / model.stem / fallback.name).is_file():
@@ -300,6 +308,12 @@ class Speech:
                 if cue is not None and self.process is cue:
                     self.stop()
 
+    def set_muted(self, muted: bool) -> None:
+        with self.lock:
+            self.muted = muted
+            if muted:
+                self.stop()
+
     def stop(self) -> None:
         with self.lock:
             if self.kokoro_busy and self.kokoro_process:
@@ -323,8 +337,10 @@ class Speech:
         command = self._kokoro_command(voice) if voice and not self.configured else None
         if not command or not clean:
             return None
-        self.stop()
         with self.lock:
+            if self.muted:
+                return None
+            self.stop()
             process = self._start_kokoro(command)
             self.kokoro_busy = True
             self.kokoro_started = monotonic()
@@ -348,8 +364,10 @@ class Speech:
         if not self.configured and self.voice in KOKORO_VOICES:
             command = self._kokoro_command(KOKORO_VOICES[self.voice])
             if command:
-                self.stop()
                 with self.lock:
+                    if self.muted:
+                        return
+                    self.stop()
                     process = self._start_kokoro(command)
                     self.kokoro_busy = True
                     self.kokoro_started = monotonic()
@@ -358,10 +376,10 @@ class Speech:
                         target=self._send_kokoro, args=(process, clean), daemon=True,
                     ).start()
                 return
-        python = DATA_HOME / "piper-venv/bin/python"
-        voice = DATA_HOME / "voices/es_MX-ald-medium.onnx"
+        python = self.assets / "piper-venv/bin/python"
+        voice = self.assets / "voices/es_MX-ald-medium.onnx"
         model = self.piper_model()
-        kokoro = DATA_HOME / "voices/kokoro"
+        kokoro = self.assets / "voices/kokoro"
         player_available = python.is_file() and shutil.which("pw-play")
         kokoro_ready = player_available and all(
             (kokoro / asset).is_file() for asset in ("kokoro-v1.0.int8.onnx", "voices-v1.0.bin")
@@ -388,8 +406,10 @@ class Speech:
             input_text = clean
         else:
             return
-        self.stop()
         with self.lock:
+            if self.muted:
+                return
+            self.stop()
             self.process = subprocess.Popen(
                 command, stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, start_new_session=True, text=True, encoding="utf-8",

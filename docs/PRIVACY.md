@@ -6,6 +6,9 @@ automatically sent to third-party services. A requested visual turn may send
 its temporary images to the configured Codex service as attachments; this is
 the only expected image transfer.
 
+Camera and screen previews are private JPEGs with a short runtime lifetime.
+Metric cards keep one SVG for the most recent chart in the runtime directory.
+
 To erase local data, stop the service and remove the three `free-hands`
 directories under XDG config, data, and runtime. Keep a backup first if chat
 continuity matters.

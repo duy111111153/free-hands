@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import shlex
 import shutil
@@ -19,11 +20,7 @@ class TurnInterrupted(RuntimeError):
     pass
 
 
-# This bridge is explicitly user-authorized to run unattended. Keep the
-# permission profile in one place so thread and turn requests cannot drift.
 APPROVAL_POLICY = "never"
-SANDBOX_MODE = "danger-full-access"
-SANDBOX_POLICY = {"type": "dangerFullAccess"}
 
 
 class CodexClient:
@@ -31,6 +28,9 @@ class CodexClient:
         self.command = shlex.split(command)
         self.model = model
         self.effort = effort
+        full_access = os.environ.get("FREE_HANDS_FULL_ACCESS") == "1"
+        self.sandbox_mode = "danger-full-access" if full_access else "read-only"
+        self.sandbox_policy = {"type": "dangerFullAccess" if full_access else "readOnly"}
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
         self.next_id = 1
@@ -98,7 +98,7 @@ class CodexClient:
 
     def start_thread(self, cwd: str | None = None) -> str:
         with self.lock:
-            params = {"model": self.model or "gpt-5.6-luna", "approvalPolicy": APPROVAL_POLICY, "sandbox": SANDBOX_MODE}
+            params = {"model": self.model or "gpt-5.6-luna", "approvalPolicy": APPROVAL_POLICY, "sandbox": self.sandbox_mode}
             if cwd:
                 params["cwd"] = cwd
             result = self._send("thread/start", params) or {}
@@ -176,7 +176,7 @@ class CodexClient:
             request_id = self.next_id
             self.next_id += 1
             params = {"threadId": self.thread_id, "input": [{"type": "text", "text": text}],
-                      "sandboxPolicy": SANDBOX_POLICY, "approvalPolicy": APPROVAL_POLICY,
+                      "sandboxPolicy": self.sandbox_policy, "approvalPolicy": APPROVAL_POLICY,
                       "effort": effort}
             params["input"].extend({"type": "localImage", "path": str(path)} for path in images)
             if self.model:
@@ -251,7 +251,7 @@ class CodexClient:
         """Use the authenticated non-interactive client if App Server is disabled."""
         command = [
             *self._cli_command(), "exec", "--json", "--skip-git-repo-check",
-            "--sandbox", SANDBOX_MODE, "--ask-for-approval", APPROVAL_POLICY,
+            "--sandbox", self.sandbox_mode, "--ask-for-approval", APPROVAL_POLICY,
             "--model", self.model or "gpt-5.6-luna",
             "-c", f"model_reasoning_effort={json.dumps(effort or ("low" if images else self.effort))}",
         ]

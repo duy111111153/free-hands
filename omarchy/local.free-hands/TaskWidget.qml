@@ -13,42 +13,48 @@ BarWidget {
   implicitHeight: icon.implicitHeight
 
   property var task: ({})
-  property bool hidden: false
+  property string dismissedTaskId: ""
   property bool pinned: false
   property bool expired: false
-  property int previewRefresh: 0
-  property bool captureFlash: false
+  readonly property string taskId: typeof task.id === "string" ? task.id : ""
   readonly property string runtimeDir: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/free-hands"
-  readonly property string cameraSession: /^camera-[a-z0-9_]{8}$/.test(task.camera_session || "") ? task.camera_session : ""
-  readonly property int frameNumber: Number.isInteger(task.camera_frame) && task.camera_frame > 0 && task.camera_frame <= 100 ? task.camera_frame : 0
-  readonly property int shotCount: Number.isInteger(task.camera_shots) && task.camera_shots >= 0 && task.camera_shots <= 3 ? task.camera_shots : 0
   readonly property bool working: task.state === "working" || task.state === "cancelling"
   readonly property bool dockToLeft: task.corner === "top-left"
   readonly property bool canFollow: /^[0-9a-fA-F-]{36}$/.test(task.thread_id || "")
-  readonly property string executable: Quickshell.env("HOME") + "/Work/free-hands/free-hands"
+  readonly property bool hasChart: task.state === "done" && task.chart === true && /^[a-f0-9]{32}$/.test(task.id || "")
+  readonly property string chartPath: runtimeDir + "/chart.svg"
+  readonly property string executable: Quickshell.env("HOME") + "/.local/bin/free-hands"
   // Keep the target monitor independent from PanelWindow.screen to avoid a
   // visible/screen binding loop while Quickshell reloads local plugins.
   readonly property var monitor: Quickshell.screens[0]
 
+  Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+
+  function dismissCard() {
+    dismissedTaskId = taskId;
+    pinned = false;
+  }
+
   function toggleCard() {
-    if (pinned || !hidden) {
-      hidden = true;
-      pinned = false;
-    } else {
-      hidden = false;
+    if (card.visible)
+      dismissCard();
+    else
       pinned = true;
-    }
   }
 
   function runAction(action) {
     if (actionProc.running || !/^[a-f0-9]{32}$/.test(task.id || ""))
       return;
-    actionProc.command = action === "cancel" ? [executable, "cancel", "--task-id", task.id] : [executable, "follow", task.id];
+    actionProc.command = action === "follow" ? [executable, "follow", task.id] : [executable, action, "--task-id", task.id];
     actionProc.running = true;
   }
 
   Process {
     id: actionProc
+  }
+  Process {
+    id: chartViewer
+    command: ["xdg-open", root.chartPath]
   }
   ShellIpc {
     target: "local.free-hands"
@@ -69,13 +75,7 @@ BarWidget {
           return;
         const next = JSON.parse(content);
         const changed = next.state !== root.task.state || next.id !== root.task.id;
-        const previousSession = root.cameraSession;
-        const previousCount = root.shotCount;
         root.task = next;
-        if (root.cameraSession !== "" && root.cameraSession === previousSession && root.shotCount > previousCount) {
-          root.captureFlash = true;
-          flashTimer.restart();
-        }
         if (changed) {
           root.expired = false;
           expiry.stop();
@@ -90,13 +90,8 @@ BarWidget {
   }
 
   Timer {
-    id: flashTimer
-    interval: 125
-    onTriggered: root.captureFlash = false
-  }
-  Timer {
     id: expiry
-    interval: 8500
+    interval: root.hasChart || root.task.camera_session || root.task.screen_session ? 20000 : 8500
     onTriggered: root.expired = true
   }
 
@@ -113,7 +108,8 @@ BarWidget {
   PanelWindow {
     id: card
     screen: root.monitor
-    visible: !root.hidden && (root.pinned || root.working || (!root.expired && ["done", "cancelled", "error"].includes(root.task.state)))
+    visible: root.pinned || (root.taskId !== "" && root.dismissedTaskId !== root.taskId
+      && (root.working || (!root.expired && ["done", "cancelled", "error"].includes(root.task.state))))
     anchors.top: true
     anchors.left: root.dockToLeft
     anchors.right: !root.dockToLeft
@@ -132,8 +128,11 @@ BarWidget {
     Rectangle {
       anchors.fill: parent
       radius: 10
-      color: Color.background
       border.color: root.working ? Color.accent : Color.muted
+      gradient: Gradient {
+        GradientStop { position: 0.0; color: Qt.tint(Color.background, Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.08)) }
+        GradientStop { position: 1.0; color: Color.background }
+      }
     }
 
     Rectangle {
@@ -162,10 +161,37 @@ BarWidget {
         id: closeArea
         anchors.fill: parent
         hoverEnabled: true
-        onClicked: {
-          root.hidden = true;
-          root.pinned = false;
-        }
+        onClicked: root.dismissCard()
+      }
+    }
+
+    Rectangle {
+      z: 3
+      visible: (root.working || root.task.state === "done") && !root.hasChart
+        && !root.task.camera_session && !root.task.screen_session
+        && /^[a-f0-9]{32}$/.test(root.task.id || "")
+      anchors.right: closeButton.left
+      anchors.top: closeButton.top
+      anchors.rightMargin: 4
+      width: muteLabel.implicitWidth + 12
+      height: closeButton.height
+      radius: 6
+      color: muteArea.containsMouse ? Color.muted : Color.background
+
+      Text {
+        id: muteLabel
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: strings.t(root.task.muted === true ? "muted" : "mute")
+        color: Color.foreground
+      }
+      MouseArea {
+        id: muteArea
+        anchors.fill: parent
+        enabled: root.task.muted !== true
+        cursorShape: Qt.PointingHandCursor
+        hoverEnabled: true
+        onClicked: root.runAction("mute")
       }
     }
 
@@ -181,127 +207,145 @@ BarWidget {
         color: Color.accent
         font.bold: true
       }
-      Row {
-        id: visualPreviews
-        width: parent.width
-        spacing: 6
-        visible: root.cameraSession !== "" || root.task.screen_active === true
+      Repeater {
+        model: ["camera", "screen"]
+        Column {
+          id: captureView
+          required property string modelData
+          readonly property bool webcam: modelData === "camera"
+          readonly property string info: root.task[modelData + "_session"] || ""
+          readonly property string session: /^(camera|screen)-[a-z0-9_]{8}$/.test(info) ? info : ""
+          readonly property bool active: root.task[modelData + "_active"] === true
+          readonly property int frame: bounded("frame", 100)
+          readonly property int count: bounded("shots", 4)
+          width: layout.width
+          spacing: 5
+          visible: session !== ""
 
-        Rectangle {
-          visible: root.cameraSession !== ""
-          width: screenPreview.visible ? (visualPreviews.width - visualPreviews.spacing) / 2 : visualPreviews.width
-          height: screenPreview.visible ? 116 : 160
-          color: Color.background
-          clip: true
-
-          Image {
-            id: cameraPreview
-            anchors.fill: parent
-            asynchronous: true
-            retainWhileLoading: true
-            fillMode: Image.PreserveAspectFit
-            cache: false
-            sourceSize.width: 448
-            source: card.visible && root.cameraSession !== "" && root.frameNumber ? "file://" + root.runtimeDir + "/" + root.cameraSession + "/preview-" + (root.frameNumber % 3) + ".jpg?v=" + root.frameNumber : ""
+          function bounded(field, max) {
+            const value = root.task[modelData + "_" + field];
+            return Number.isInteger(value) && value > 0 && value <= max ? value : 0;
           }
-
-          Text {
-            anchors.centerIn: parent
-            visible: cameraPreview.status !== Image.Ready
-            textFormat: Text.PlainText
-            text: "Abriendo webcam…"
-            color: Color.muted
+          function frameUrl(name) {
+            return card.visible && session ? "file://" + root.runtimeDir + "/" + session + "/" + name : "";
           }
+          onCountChanged: if (count > 0 && visible) flash.restart()
 
           Rectangle {
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.margins: 6
-            width: cameraLabel.implicitWidth + 12
-            height: cameraLabel.implicitHeight + 6
-            radius: 4
+            width: parent.width
+            height: root.task.camera_session && root.task.screen_session ? 105 : 155
+            radius: 6
+            clip: true
             color: Color.background
-            Text {
-              id: cameraLabel
-              anchors.centerIn: parent
-              textFormat: Text.PlainText
-              text: root.task.camera_active === true ? "Webcam en vivo" : "Cámara cerrada"
-              color: Color.foreground
-            }
-          }
-
-          Rectangle {
-            anchors.fill: parent
-            color: "white"
-            opacity: root.captureFlash ? 0.62 : 0
-            visible: opacity > 0
-            Behavior on opacity {
-              enabled: !root.captureFlash
-              NumberAnimation {
-                duration: Style.duration(100)
-                easing.type: Style.easeOut
-              }
-            }
-          }
-        }
-
-        Image {
-          id: screenPreview
-          visible: root.task.screen_active === true
-          width: root.cameraSession !== "" ? (visualPreviews.width - visualPreviews.spacing) / 2 : visualPreviews.width
-          height: 116
-          fillMode: Image.PreserveAspectFit
-          asynchronous: true
-          retainWhileLoading: true
-          cache: false
-          sourceSize.width: 448
-          source: card.visible && visible ? "file://" + root.runtimeDir + "/screen-preview.jpg?v=" + root.previewRefresh : ""
-        }
-      }
-
-      Row {
-        id: shotStrip
-        width: parent.width
-        spacing: 6
-        visible: root.cameraSession !== ""
-        Repeater {
-          model: 3
-          Rectangle {
-            required property int index
-            width: (shotStrip.width - shotStrip.spacing * 2) / 3
-            height: 67
-            radius: 4
-            color: Color.background
-            border.color: root.shotCount === index + 1 && root.captureFlash ? Color.accent : Color.muted
             Image {
               anchors.fill: parent
-              anchors.margins: 2
               asynchronous: true
+              retainWhileLoading: true
               fillMode: Image.PreserveAspectFit
               cache: false
-              sourceSize.width: 160
-              source: card.visible && root.cameraSession !== "" && root.shotCount > index ? "file://" + root.runtimeDir + "/" + root.cameraSession + "/shot-" + (index + 1) + ".jpg" : ""
+              sourceSize.width: 448
+              source: !captureView.frame ? "" : captureView.frameUrl(captureView.webcam
+                ? "preview-" + (captureView.frame % 3) + ".jpg?v=" + captureView.frame
+                : "shot-" + captureView.count + ".jpg")
+            }
+            Text {
+              x: 8
+              y: 5
+              padding: 4
+              textFormat: Text.PlainText
+              text: strings.t(captureView.webcam
+                ? (captureView.active ? "cameraLive" : "cameraDone")
+                : (captureView.active ? "screenLive" : "screenDone"))
+              color: Color.foreground
+              Rectangle {
+                anchors.fill: parent
+                z: -1
+                radius: 4
+                color: Color.background
+              }
             }
             Rectangle {
-              anchors.horizontalCenter: parent.horizontalCenter
-              anchors.bottom: parent.bottom
-              anchors.bottomMargin: 4
-              width: shotLabel.implicitWidth + 10
-              height: shotLabel.implicitHeight + 4
-              radius: 4
-              color: Color.background
-              Text {
-                id: shotLabel
-                anchors.centerIn: parent
-                textFormat: Text.PlainText
-                text: "Toma " + (index + 1)
-                color: Color.foreground
+              id: exposure
+              anchors.fill: parent
+              color: "white"
+              opacity: 0
+              NumberAnimation {
+                id: flash
+                target: exposure
+                property: "opacity"
+                from: 0.48
+                to: 0
+                duration: Style.duration(150)
+                easing.type: Easing.OutCubic
+              }
+            }
+          }
+          Row {
+            id: shots
+            width: parent.width
+            spacing: 4
+            Repeater {
+              model: 4
+              Rectangle {
+                id: shotTile
+                required property int index
+                readonly property int number: index + 1
+                readonly property bool captured: captureView.count >= number
+                width: (shots.width - 3 * shots.spacing) / 4
+                height: 52
+                radius: 5
+                color: Color.background
+                border.color: still.status === Image.Ready ? Color.accent : Color.muted
+                Image {
+                  id: still
+                  anchors.fill: parent
+                  anchors.margins: 2
+                  asynchronous: true
+                  fillMode: Image.PreserveAspectFit
+                  sourceSize.width: 144
+                  opacity: status === Image.Ready ? 1 : 0
+                  Behavior on opacity {
+                    NumberAnimation { duration: Style.duration(130); easing.type: Easing.OutCubic }
+                  }
+                  cache: false
+                  source: shotTile.captured ? captureView.frameUrl("shot-" + shotTile.number + ".jpg") : ""
+                }
+                Text {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  anchors.bottom: parent.bottom
+                  padding: 2
+                  textFormat: Text.PlainText
+                  text: strings.t("shot").arg(I18n.formatNumber(shotTile.number))
+                  color: Color.foreground
+                  Rectangle {
+                    anchors.fill: parent
+                    z: -1
+                    radius: 3
+                    color: Color.background
+                  }
+                }
               }
             }
           }
         }
       }
 
+      Image {
+        id: chartPreview
+        visible: root.hasChart
+        width: parent.width
+        height: 148
+        asynchronous: true
+        cache: false
+        fillMode: Image.PreserveAspectFit
+        source: visible && card.visible ? "file://" + root.chartPath + "?v=" + root.task.id : ""
+      }
+      Text {
+        visible: root.hasChart
+        textFormat: Text.PlainText
+        text: "Doble clic en la gráfica para ampliarla"
+        color: Color.muted
+      }
       Text {
         width: parent.width
         textFormat: Text.PlainText
@@ -316,20 +360,18 @@ BarWidget {
       }
     }
 
-    Timer {
-      interval: 600
-      repeat: true
-      running: card.visible && screenPreview.visible
-      onTriggered: root.previewRefresh++
-    }
-
     MouseArea {
       id: grab
       anchors.fill: parent
       hoverEnabled: true
       onEntered: forceActiveFocus()
-      onDoubleClicked: if (root.canFollow)
-        root.runAction("follow")
+      onDoubleClicked: mouse => {
+        const position = grab.mapToItem(chartPreview, mouse.x, mouse.y);
+        if (root.hasChart && chartPreview.contains(position))
+          chartViewer.running = true;
+        else if (root.canFollow)
+          root.runAction("follow");
+      }
       Keys.onPressed: event => {
         if (event.key === Qt.Key_X && (event.modifiers & Qt.AltModifier) && root.task.state === "working") {
           event.accepted = true;

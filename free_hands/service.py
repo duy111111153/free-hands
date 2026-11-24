@@ -10,11 +10,13 @@ import re
 import subprocess
 import tempfile
 from contextlib import ExitStack, contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from time import monotonic
 from pathlib import Path
 from uuid import uuid4
 
 from . import config
+from .chart import CHART_INSTRUCTION, CHART_REQUEST, parse_chart
 from .codex import CodexClient, TurnInterrupted
 from .history import History
 from .overlay import Overlay
@@ -23,7 +25,7 @@ from .persona import (
     regional_context, style_instruction, waiting_policy,
 )
 from .rag import refresh as refresh_rag
-from .screen import SHOT_COUNT, ScreenCaptureError, capture_camera, screen_image, vision_intent
+from .screen import SHOT_COUNT, ScreenCaptureError, capture_camera, capture_screen, vision_intent
 from .speech import Speech, narration_boundary, spoken_text
 
 
@@ -132,7 +134,12 @@ class Service:
 
     @contextmanager
     def _vision_capture(self, camera: bool, screen: bool):
-        if not (camera or screen):
+        jobs = []
+        if screen:
+            jobs.append(("screen", capture_screen))
+        if camera:
+            jobs.append(("camera", capture_camera))
+        if not jobs:
             yield ()
             return
 
@@ -146,46 +153,69 @@ class Service:
                 if self.codex.cancel_requested:
                     raise TurnInterrupted("Tarea cancelada.")
 
-        with ExitStack() as stack:
-            try:
-                images = [stack.enter_context(screen_image())] if screen else []
-                publish(screen_active=screen)
-                if camera:
-                    def on_frame(sequence, count):
-                        publish(camera_frame=sequence, camera_shots=count)
-
-                    for attempt in range(2):
-                        check_cancel()
-                        temp = tempfile.TemporaryDirectory(prefix="camera-", dir=config.RUNTIME_HOME)
-                        folder = Path(stack.enter_context(temp))
-                        publish(camera_session=folder.name, camera_active=True,
-                                camera_frame=0, camera_shots=0)
-                        try:
-                            shots = capture_camera(folder, on_frame, check_cancel)
-                            if len(shots) != SHOT_COUNT or any(
-                                not path.is_file() or path.stat().st_size == 0 for path in shots
-                            ):
-                                raise ScreenCaptureError("No pude obtener las tres tomas de la webcam.")
-                        except OSError as error:
-                            raise ScreenCaptureError("No pude guardar las tomas privadas de la webcam.") from error
-                        except ScreenCaptureError:
-                            if attempt:
-                                raise
-                            publish(camera_session="", camera_active=False, camera_frame=0,
-                                    camera_shots=0, detail="Reintentando abrir la webcam.")
-                            temp.cleanup()
-                            continue
-                        break
-                    images.extend(shots)
-                    publish(camera_active=False)
+        def collect(source, capture, stack):
+            attempts = 2 if source == "camera" else 1
+            for attempt in range(attempts):
                 check_cancel()
-                yield tuple(images)
+                temp = tempfile.TemporaryDirectory(prefix=f"{source}-", dir=config.RUNTIME_HOME)
+                folder = Path(stack.enter_context(temp))
+                publish(**{f"{source}_session": folder.name, f"{source}_active": True,
+                           f"{source}_frame": 0, f"{source}_shots": 0})
+
+                def on_frame(sequence, count):
+                    publish(**{f"{source}_frame": sequence, f"{source}_shots": count})
+
+                try:
+                    shots = capture(folder, on_frame, check_cancel)
+                    if len(shots) != SHOT_COUNT or any(not path.is_file() or not path.stat().st_size for path in shots):
+                        name = "la webcam" if source == "camera" else "la pantalla"
+                        raise ScreenCaptureError(f"No pude obtener las cuatro tomas de {name}.")
+                except ScreenCaptureError:
+                    if attempt + 1 == attempts:
+                        raise
+                    publish(camera_session="", camera_active=False, detail="Reintentando abrir la webcam.")
+                    temp.cleanup()
+                    continue
+                except OSError as error:
+                    raise ScreenCaptureError("No pude guardar las tomas privadas.") from error
+                finally:
+                    publish(**{f"{source}_active": False})
+                return shots
+
+        with ExitStack() as stack:
+            task_id = self.task.get("id")
+            retained = False
+            try:
+                # A separate stack per source keeps cleanup deterministic even in parallel.
+                stacks = [stack.enter_context(ExitStack()) for _ in jobs]
+                with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+                    pending = [pool.submit(collect, source, capture, resources)
+                               for (source, capture), resources in zip(jobs, stacks)]
+                    images = tuple(path for future in pending for path in future.result())
+                check_cancel()
+                yield images
+                if task_id and self.tracker:
+                    files = stack.pop_all()
+
+                    def expire_previews():
+                        files.close()
+                        with self.task_lock:
+                            if self.task.get("id") == task_id and config.RUNTIME_HOME.is_dir():
+                                self.task.update(camera_session="", screen_session="")
+                                self._publish_task()
+
+                    expiry = threading.Timer(23, expire_previews)
+                    expiry.daemon = True
+                    expiry.start()
+                    retained = True
             finally:
-                publish(camera_session="", camera_active=False, camera_frame=0,
-                        camera_shots=0, screen_active=False)
+                if not retained:
+                    publish(camera_session="", camera_active=False, camera_frame=0, camera_shots=0,
+                            screen_session="", screen_active=False, screen_frame=0, screen_shots=0)
 
     def _tracked_ingest(self, text: str) -> dict:
         with self.task_lock:
+            self.speech.set_muted(False)
             self.task = {"id": uuid4().hex, "state": "working",
                          "detail": "Preparando la consulta.", "thread_id": None, "shared": False,
                          "corner": self.settings.get("overlay_corner", "top-right")}
@@ -310,10 +340,11 @@ class Service:
         preview = ""
         next_update = started
         story = bool(re.search(r"\b(?:chiste|cuento|relato|anécdota)\b", text, re.I))
+        chart_requested = bool(CHART_REQUEST.search(text)) and self.tracker
         long_script = bool(re.search(r"\b(?:[3-9]\d{2}|\d{4,})\s+palabras\b", text, re.I))
         # Check short webcam answers before speaking so a model-side attachment
         # failure cannot sound like a request to manually send images.
-        narrate = not inspect_camera
+        narrate = not (inspect_camera or inspect_screen or chart_requested)
         narration = None
         opening = ""
         received = ""
@@ -348,20 +379,22 @@ class Service:
         turn_effort = "low" if simple and self.codex.effort == "medium" else None
         try:
             if inspect_camera:
-                self._progress("Abriendo la webcam para tomar tres fotos.")
+                self._progress("Abriendo la webcam para tomar cuatro fotos.")
             with self._vision_capture(inspect_camera, inspect_screen) as images:
                 prompt = text
                 if images:
                     if inspect_both:
-                        description = "La primera imagen es la pantalla. Las otras tres son fotos de la webcam en orden cronológico."
+                        description = "Las primeras cuatro imágenes son de la pantalla. Las últimas cuatro son de la webcam. Cada grupo está en orden cronológico."
                     elif inspect_camera:
-                        description = "Las tres imágenes adjuntas son fotos de la webcam, en orden cronológico."
+                        description = "Las cuatro imágenes adjuntas son fotos locales de la webcam, en orden cronológico."
                     else:
-                        description = "La imagen adjunta es una captura actual del monitor activo."
+                        description = "Las cuatro imágenes adjuntas son capturas del monitor activo, en orden cronológico."
                     self._progress("Revisando las imágenes capturadas." if inspect_camera else "Revisando el monitor activo.")
                     prompt += (
                         "\n\n" + description + " Responde según lo visible. "
-                        "DOOM ya realizó la captura solicitada para este turno y adjuntó el resultado. "
+                        "DOOM ya realizó la captura local para este turno y adjuntó el resultado. "
+                        "Analiza directamente los adjuntos. La cámara y la pantalla no requieren Chrome, navegador ni herramientas adicionales. "
+                        "Si el dictado llegó entrecortado, describe en una frase lo más visible antes de pedir detalles. "
                         "Usa estas imágenes actuales antes que descripciones o fotos de turnos anteriores. "
                         "Responde sin un aviso genérico de falta de acceso ni una explicación del proceso de captura. "
                         "No afirmes que ves video continuo. "
@@ -370,6 +403,11 @@ class Service:
                     )
                 else:
                     prompt += "\n\nContinúa con el contexto de este hilo. Consulta otros chats solo si te lo pido."
+                    if not visual_followup:
+                        prompt += (
+                            " Si una mención de la webcam o pantalla es ambigua, pregunta brevemente "
+                            "qué quiere que revises. El servicio local hace las capturas cuando se solicitan."
+                        )
                 if visual_followup:
                     previous_view = "la webcam" if camera_followup else "la pantalla"
                     prompt += (
@@ -399,21 +437,29 @@ class Service:
                     )
                 if inspect_camera or camera_followup:
                     prompt += camera_style(text, followup=camera_followup)
+                if chart_requested:
+                    prompt += CHART_INSTRUCTION
                 try:
                     with self.speech.waiting(cue_enabled, cue_reason):
                         turn_id, answer = self.codex.ask(
                             prompt, delta, os.getcwd(), images=images, on_progress=self._progress,
                             effort=turn_effort,
                         )
-                    if inspect_camera and re.search(
+                    refused = (inspect_camera or inspect_screen) and re.search(
                         r"^\s*(?:no (?:me lleg[oó]|recib[ií]|he recibido|estoy recibiendo|tengo)\b"
                         r".{0,65}\b(?:foto|imagen|captura)(?:s|es)?"
                         r"|no veo (?:ninguna|una) (?:foto|imagen|captura)"
                         r"|no puedo (?:acceder|ver|abrir)\b.{0,65}\b(?:webcam|c[aá]mara))\b",
                         answer, re.I,
-                    ):
+                    )
+                    browser_refusal = bool(images) and re.search(
+                        r"\b(?:no puedo|no hay|sin sesi[oó]n)\b[^.!?]{0,180}\b(?:chrome|navegador)\b",
+                        answer, re.I,
+                    )
+                    if refused or browser_refusal:
+                        retry = "abre mi webcam otra vez" if inspect_camera else "revisa mi pantalla otra vez"
                         raise ScreenCaptureError(
-                            "No pude analizar las fotos de este turno. Di «abre mi webcam otra vez» para repetir."
+                            f"No pude analizar las imágenes de este turno. Di «{retry}» para repetir."
                         )
                 except RuntimeError as error:
                     if narration is not None:
@@ -433,6 +479,24 @@ class Service:
             self.notify(f"{self.agent_name} · {'Webcam' if inspect_camera else 'Pantalla'}", str(error))
             self.speech.speak(str(error))
             return {"state": "screen_unavailable", "error": str(error)}
+        if chart_requested:
+            answer, chart = parse_chart(answer)
+            if chart:
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(dir=config.RUNTIME_HOME, delete=False) as handle:
+                        temporary = Path(handle.name)
+                        handle.write(chart)
+                    temporary.replace(config.RUNTIME_HOME / "chart.svg")
+                except OSError:
+                    logging.getLogger(__name__).exception("Could not publish chart")
+                else:
+                    with self.task_lock:
+                        self.task["chart"] = True
+                    answer = f"Puedes ver la comparación en esta gráfica. {answer}".strip()
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
         response_ms = round((monotonic() - started) * 1000)
         thread_id = self.codex.thread_id or thread_id or f"pending-{int(started * 1000)}"
         suggestion = route.get("suggestion")
@@ -517,6 +581,14 @@ class Service:
 
     def handle(self, request: dict) -> dict:
         command = request.get("command")
+        if command == "mute":
+            with self.task_lock:
+                if not self.task.get("id") or request.get("task_id") != self.task["id"]:
+                    return {"state": "stale"}
+                self.speech.set_muted(True)
+                self.task["muted"] = True
+                self._publish_task()
+                return {"state": "muted"}
         if command == "toggle": return self.toggle()
         if command == "ingest": return self._tracked_ingest(str(request.get("text", "")))
         if command == "cancel": return self.cancel(request.get("task_id"))
@@ -568,8 +640,8 @@ class Service:
         if config.SOCKET_FILE.exists(): config.SOCKET_FILE.unlink()
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(config.SOCKET_FILE)); config.SOCKET_FILE.chmod(0o600); server.listen(8)
-        for folder in config.RUNTIME_HOME.glob("camera-*"):
-            if re.fullmatch(r"camera-[a-z0-9_]{8}", folder.name) and folder.is_dir() and not folder.is_symlink():
+        for folder in config.RUNTIME_HOME.iterdir():
+            if re.fullmatch(r"(?:camera|screen)-[a-z0-9_]{8}", folder.name) and folder.is_dir() and not folder.is_symlink():
                 shutil.rmtree(folder)
         self.speech.prewarm()
         self._publish_task()
@@ -584,7 +656,7 @@ class Service:
                 conn.settimeout(3)
                 data = conn.recv(1024 * 64)
                 request = json.loads(data.decode())
-                if request.get("command") == "cancel":
+                if request.get("command") in {"cancel", "mute"}:
                     result = self.handle(request)
                 else:
                     with self.request_lock:

@@ -9,9 +9,11 @@ local speech reads the response back while the Omarchy widget shows progress.
 - Alt+Z dictation through Handy and a private Unix socket.
 - DOOM voice responses with bilingual pronunciation, pauses, and volume control.
 - Local SQLite history, chat continuity, topic routing, RAG, and graph export.
-- Explicit, intent-gated screen capture and three-shot webcam capture.
+- On-demand webcam and screen bursts with four frames per source, live previews, and capture flashes.
+- Lightweight metric charts in the task card, with a full-size view on double-click.
+- A per-response voice mute in the regular task card.
 - Temporary previews for the Omarchy widget; capture files are private and
-  removed after the requested turn.
+  removed shortly after the requested turn.
 - Cancellation, follow-up, notifications, and Codex App Server integration.
 
 FREE-HANDS does not upload audio, screenshots, webcam frames, or local history
@@ -19,17 +21,17 @@ automatically. A requested visual turn may attach its temporary images to that
 Codex turn. See [Camera and screen](docs/CAMERA_AND_SCREEN.md) and
 [Privacy](docs/PRIVACY.md).
 
-## Five-minute installation
+## Installation
 
 ```bash
 git clone https://github.com/duy111111153/free-hands.git ~/Work/free-hands
 cd ~/Work/free-hands
-chmod +x free-hands handy/free-hands-transcription
+./install.sh
 ./free-hands doctor
 ```
 
-Install the user service and Omarchy widget after checking the full
-[installation guide](docs/INSTALLATION.md). A working setup needs Omarchy or a
+Follow the [installation guide](docs/INSTALLATION.md) to enable the user service,
+configure Handy, and add the Omarchy widget. A working setup needs Omarchy or a
 compatible Linux desktop, Python 3.11+, Git, Codex CLI/App Server, Handy,
 FFmpeg, PipeWire, and a local speech backend (Piper, Kokoro, or eSpeak NG).
 

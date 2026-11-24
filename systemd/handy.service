@@ -1,0 +1,15 @@
+[Unit]
+Description=Handy speech-to-text global shortcut
+After=graphical-session.target pipewire.service
+PartOf=graphical-session.target
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/handy --start-hidden
+Restart=on-failure
+RestartSec=3
+Environment=GDK_BACKEND=wayland,x11,*
+
+[Install]
+WantedBy=graphical-session.target

@@ -29,6 +29,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve"); sub.add_parser("toggle"); sub.add_parser("status"); sub.add_parser("doctor")
     cancel = sub.add_parser("cancel"); cancel.add_argument("--task-id")
+    mute = sub.add_parser("mute"); mute.add_argument("--task-id", required=True)
     follow = sub.add_parser("follow"); follow.add_argument("task_id")
     ask = sub.add_parser("ask"); ask.add_argument("text")
     search = sub.add_parser("chat-search"); search.add_argument("term")
@@ -49,6 +50,7 @@ def main() -> int:
         history = History(config.DB_FILE); print(json.dumps({"chunks": refresh(history, args.project, args.root, args.description)})); return 0
     if args.command == "toggle": print(json.dumps(call("toggle"), ensure_ascii=False)); return 0
     if args.command == "cancel": print(json.dumps(call("cancel", task_id=args.task_id), ensure_ascii=False)); return 0
+    if args.command == "mute": print(json.dumps(call("mute", task_id=args.task_id), ensure_ascii=False)); return 0
     if args.command == "follow":
         task = json.loads(config.TASK_FILE.read_text(encoding="utf-8"))
         thread_id = task.get("thread_id") or ""

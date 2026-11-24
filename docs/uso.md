@@ -18,18 +18,19 @@ Haz doble clic para abrir el mismo hilo de Codex en una terminal. Con el
 puntero sobre la tarjeta, pulsa **Alt+X** para interrumpir el turno activo.
 
 En Omarchy con Hyprland puedes dictar «¿Qué ves en pantalla?» o «Mira mi
-pantalla y explícame el error». Voz Codex adjunta al turno una captura
-JPEG del monitor activo, reducida a un máximo de 1280 píxeles por el lado
-largo. La captura temporal se borra al terminar la consulta. Codex recibe
-la imagen para analizarla y puede conservarla en su conversación.
+pantalla y explícame el error». DOOM toma cuatro JPEG del monitor activo,
+con un máximo de 1280 píxeles en el lado largo, y los adjunta al turno.
 
-Di «Abre mi webcam y dime qué ves» para tomar tres fotos separadas por unos
-750 milisegundos. La tarjeta muestra la vista previa en vivo, un destello por
-toma y las tres miniaturas encima del texto. El dispositivo se cierra antes
-de enviar las fotos a Codex. La vista en vivo se procesa localmente y los
-archivos temporales se borran al terminar o cancelar. El caché solo recuerda
-el formato de la cámara. Con «Mira la webcam y mi pantalla», Codex recibe
-también una captura del monitor.
+Di «Abre mi webcam y dime qué ves» para tomar cuatro fotos separadas por
+unos 750 milisegundos. Tanto la pantalla como la webcam tienen su propia
+vista previa, destello y cuatro miniaturas que se cargan antes del texto.
+La cámara se cierra antes del análisis y las miniaturas privadas caducan
+después de la respuesta. Puedes pedir ambas fuentes al mismo tiempo.
+
+En una tarjeta normal, **Silenciar voz** corta el audio de ese turno. La
+siguiente respuesta vuelve a sonar. Con «Compara estos números en una
+gráfica», DOOM muestra una miniatura SVG. Abre la imagen completa con
+doble clic sobre la gráfica.
 
 `voz-codex doctor` revisa dependencias. `voz-codex status` muestra el hilo y proyecto activos. `voz-codex chat-search palabra` busca chats locales. `voz-codex chat-select THREAD_ID` retoma uno. `voz-codex cancel` detiene la lectura. La respuesta también se guarda en SQLite.
 
